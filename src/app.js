@@ -20,7 +20,10 @@ app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
   cors({
-    origin: env.frontendUrl,
+    origin: [
+      "http://localhost:5173",
+      env.frontendUrl
+    ].filter(Boolean),
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization", "x-signature", "x-api-key"],
   })
