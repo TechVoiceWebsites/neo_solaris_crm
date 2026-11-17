@@ -11,6 +11,24 @@ import { signToken, authenticate } from "../middleware/auth.js";
 const r = Router();
 const pub = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role });
 
+// Strict Regex Validators
+const strictEmail = z
+  .string()
+  .trim()
+  .regex(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, "Enter a valid email address");
+
+const strongPassword = z
+  .string()
+  .regex(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^()_\-+=])[A-Za-z\d@$!%*?&#^()_\-+=]{8,}$/,
+    "Password must be 8+ characters with uppercase, lowercase, number, and special character"
+  );
+
+const indianPhone = z
+  .string()
+  .trim()
+  .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number");
+
 // In-memory OTP store: email -> { otpHash, expiresAt, verified, attempts }
 const otpStore = new Map();
 
@@ -52,7 +70,7 @@ async function sendOtpEmail(toEmail, userName, otp) {
 
 // 1. Login
 r.post("/login", rateLimit({ windowMs: 15 * 60000, limit: 20 }), wrap(async (req, res) => {
-  const { email, password } = parse(z.object({ email: z.string().email(), password: z.string().min(1) }), req.body);
+  const { email, password } = parse(z.object({ email: strictEmail, password: z.string().min(1) }), req.body);
   const u = await prisma.user.findFirst({ where: { email: email.toLowerCase(), isActive: true, deletedAt: null } });
   if (!u || !(await bcrypt.compare(password, u.passwordHash))) throw new ApiError(401, "Email or password is incorrect");
   await prisma.auditLog.create({ data: { userId: u.id, action: "auth.login", entity: "user", entityId: u.id } });
@@ -64,10 +82,10 @@ r.post("/register", rateLimit({ windowMs: 15 * 60000, limit: 15 }), wrap(async (
   const body = parse(
     z.object({
       name: z.string().trim().min(2, "Name must be at least 2 characters"),
-      email: z.string().trim().email("Enter a valid email"),
-      password: z.string().min(8, "Password must be at least 8 characters"),
+      email: strictEmail,
+      password: strongPassword,
       role: z.enum(["ADMIN", "SALES_STAFF"]),
-      phone: z.string().trim().optional(),
+      phone: indianPhone.optional(),
       teamName: z.string().trim().optional(),
     }),
     req.body
@@ -105,7 +123,7 @@ r.post("/register", rateLimit({ windowMs: 15 * 60000, limit: 15 }), wrap(async (
 r.post("/forgot-password", rateLimit({ windowMs: 15 * 60000, limit: 10 }), wrap(async (req, res) => {
   const { email, role } = parse(
     z.object({
-      email: z.string().trim().email("Enter a valid registered email"),
+      email: strictEmail,
       role: z.enum(["ADMIN", "SALES_STAFF"]).optional(),
     }),
     req.body
@@ -143,8 +161,8 @@ r.post("/forgot-password", rateLimit({ windowMs: 15 * 60000, limit: 10 }), wrap(
 r.post("/verify-otp", rateLimit({ windowMs: 15 * 60000, limit: 20 }), wrap(async (req, res) => {
   const { email, otp } = parse(
     z.object({
-      email: z.string().trim().email(),
-      otp: z.string().trim().length(6, "OTP must be 6 digits"),
+      email: strictEmail,
+      otp: z.string().trim().regex(/^\d{6}$/, "OTP must be 6 digits"),
     }),
     req.body
   );
@@ -175,9 +193,9 @@ r.post("/verify-otp", rateLimit({ windowMs: 15 * 60000, limit: 20 }), wrap(async
 r.post("/reset-password", rateLimit({ windowMs: 15 * 60000, limit: 15 }), wrap(async (req, res) => {
   const { email, otp, newPassword } = parse(
     z.object({
-      email: z.string().trim().email(),
-      otp: z.string().trim().length(6),
-      newPassword: z.string().min(8, "New password must be at least 8 characters"),
+      email: strictEmail,
+      otp: z.string().trim().regex(/^\d{6}$/, "OTP must be 6 digits"),
+      newPassword: strongPassword,
     }),
     req.body
   );
@@ -210,7 +228,7 @@ r.post("/logout", authenticate, wrap(async (req, res) => {
   ok(res, { loggedOut: true });
 }));
 r.post("/password", authenticate, wrap(async (req, res) => {
-  const { current, next } = parse(z.object({ current: z.string(), next: z.string().min(10) }), req.body);
+  const { current, next } = parse(z.object({ current: z.string(), next: strongPassword }), req.body);
   if (!(await bcrypt.compare(current, req.user.passwordHash))) throw new ApiError(400, "Current password is incorrect");
   await prisma.user.update({ where: { id: req.user.id }, data: { passwordHash: await bcrypt.hash(next, 12) } });
   ok(res, { updated: true });
