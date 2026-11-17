@@ -52,21 +52,56 @@ for (const [i, name] of stages.entries()) {
   });
 }
 
-const pw = process.env.SEED_ADMIN_PASSWORD;
-if (pw) {
-  const passwordHash = await bcrypt.hash(pw, 12);
+// 1. Admin Account
+const adminPw = process.env.SEED_ADMIN_PASSWORD || "Admin@123";
+const adminHash = await bcrypt.hash(adminPw, 12);
+await prisma.user.upsert({
+  where: { email: "admin@neosolaris.com" },
+  update: { passwordHash: adminHash, role: "ADMIN", isActive: true },
+  create: {
+    email: "admin@neosolaris.com",
+    name: "Admin",
+    role: "ADMIN",
+    passwordHash: adminHash,
+    profile: { create: {} },
+  },
+});
+
+// 2. Sales Staff Account(s) - pudhu sales persons venumna ithula add pannikalam
+const salesStaffList = [
+  {
+    email: "sales1@neosolaris.com",
+    name: "Sales Person 1",
+    password: process.env.SEED_SALES_PASSWORD || "Sales@123",
+    phone: "9876543210",
+    teamName: "Sales Team",
+  },
+];
+
+for (const staff of salesStaffList) {
+  const staffHash = await bcrypt.hash(staff.password, 12);
   await prisma.user.upsert({
-    where: { email: "admin@neosolaris.com" },
-    update: { passwordHash, isActive: true },
+    where: { email: staff.email },
+    update: {
+      name: staff.name,
+      passwordHash: staffHash,
+      role: "SALES_STAFF",
+      isActive: true,
+    },
     create: {
-      email: "admin@neosolaris.com",
-      name: "Admin",
-      role: "ADMIN",
-      passwordHash,
-      profile: { create: {} },
+      email: staff.email,
+      name: staff.name,
+      role: "SALES_STAFF",
+      passwordHash: staffHash,
+      profile: {
+        create: {
+          phone: staff.phone,
+          teamName: staff.teamName,
+        },
+      },
     },
   });
 }
 
-console.log("Seed complete");
+console.log("Seed complete: Admin & Sales Staff ready!");
 await prisma.$disconnect();
