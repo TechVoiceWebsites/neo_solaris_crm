@@ -1,7 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import nodemailer from "nodemailer";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { prisma } from "../config/db.js";
@@ -32,40 +31,46 @@ const indianPhone = z
 // In-memory OTP store: email -> { otpHash, expiresAt, verified, attempts }
 const otpStore = new Map();
 
-function getMailer() {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.SMTP_PORT || 465),
-    secure: Number(process.env.SMTP_PORT || 465) === 465,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-}
-
 async function sendOtpEmail(toEmail, userName, otp) {
-  const transporter = getMailer();
-  if (!transporter) {
-    console.log(`\n[DEV OTP] Password reset OTP for ${toEmail}: ${otp}\n`);
+  const htmlContent = `
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e1e6dc;border-radius:12px;">
+      <h2 style="color:#0F1B3D;margin:0 0 8px;">Password Reset Request</h2>
+      <p style="color:#5B6580;font-size:14px;">Hi ${userName || "User"}, use the OTP below to reset your Neo Solaris CRM password. It expires in 10 minutes.</p>
+      <div style="margin:20px 0;padding:14px;background:#F4F6F1;border-radius:10px;text-align:center;font-size:28px;font-weight:bold;letter-spacing:6px;color:#3A7D1F;">
+        ${otp}
+      </div>
+      <p style="color:#8A93A8;font-size:12px;">If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  if (process.env.BREVO_API_KEY) {
+    const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "Neo Solaris CRM",
+          email: process.env.SMTP_USER || "techvoicewebsitedevelopment@gmail.com",
+        },
+        to: [{ email: toEmail, name: userName || toEmail }],
+        subject: "Neo Solaris CRM — Password Reset OTP",
+        htmlContent,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      console.error("Brevo API Error:", errBody);
+      throw new ApiError(502, "Failed to send OTP email. Please try again.");
+    }
     return;
   }
-  await transporter.sendMail({
-    from: `"Neo Solaris CRM" <${process.env.SMTP_USER}>`,
-    to: toEmail,
-    subject: "Neo Solaris CRM — Password Reset OTP",
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e1e6dc;border-radius:12px;">
-        <h2 style="color:#0F1B3D;margin:0 0 8px;">Password Reset Request</h2>
-        <p style="color:#5B6580;font-size:14px;">Hi ${userName || "User"}, use the OTP below to reset your Neo Solaris CRM password. It expires in 10 minutes.</p>
-        <div style="margin:20px 0;padding:14px;background:#F4F6F1;border-radius:10px;text-align:center;font-size:28px;font-weight:bold;letter-spacing:6px;color:#3A7D1F;">
-          ${otp}
-        </div>
-        <p style="color:#8A93A8;font-size:12px;">If you did not request this, you can safely ignore this email.</p>
-      </div>
-    `,
-  });
+
+  console.log(`\n[DEV OTP] Password reset OTP for ${toEmail}: ${otp}\n`);
 }
 
 // 1. Login
