@@ -25,7 +25,13 @@ app.use(
       env.frontendUrl
     ].filter(Boolean),
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "x-signature", "x-api-key"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-signature",
+      "x-api-key",
+      "x-webhook-secret", // Added for IndiaMART Email-to-Webhook integration
+    ],
   })
 );
 app.use(rateLimit({ windowMs: 60000, limit: 300 }));

@@ -32,27 +32,51 @@ export const adapters = {
 
   INDIAMART: {
     name: "IndiaMART",
-    configured: () => !!process.env.INDIAMART_CRM_KEY,
-    needs: "Official IndiaMART lead API key from the client",
+    // Email Webhook secret OR Official CRM Key edhu irundhaalum configured = true nu kaattum
+    configured: () =>
+      !!(process.env.INDIAMART_WEBHOOK_SECRET || process.env.INDIAMART_CRM_KEY),
+    needs: "Gmail Auto-Forwarding Webhook Secret (No API key required)",
     verify: (req) => {
-      const key = process.env.INDIAMART_CRM_KEY;
-      if (!key) return false;
-      return req.headers["x-api-key"] === key || req.query.glusr_crm_key === key;
+      // 1. Check Email-to-Webhook Secret (No API Key Mode)
+      const emailSecret = process.env.INDIAMART_WEBHOOK_SECRET;
+      if (emailSecret && req.headers["x-webhook-secret"] === emailSecret) {
+        return true;
+      }
+
+      // 2. Fallback: Official IndiaMART API Key (if added later)
+      const apiKey = process.env.INDIAMART_CRM_KEY;
+      if (
+        apiKey &&
+        (req.headers["x-api-key"] === apiKey || req.query.glusr_crm_key === apiKey)
+      ) {
+        return true;
+      }
+
+      return false;
     },
     normalize: (b) => {
-      // IndiaMART sends either single object or inside RESPONSE array
+      // Handle both Official IndiaMART API payload & Gmail Apps Script Email payload
       const item = Array.isArray(b.RESPONSE) ? b.RESPONSE[0] : b;
       return {
-        externalId: item.UNIQUE_QUERY_ID || `im_${Date.now()}`,
+        externalId:
+          item.UNIQUE_QUERY_ID || item.emailMessageId || `im_email_${Date.now()}`,
         data: {
-          customerName: item.SENDER_NAME || item.sender_name || "IndiaMART Enquiry",
-          phone: cleanPhone(item.SENDER_MOBILE || item.sender_mobile),
-          email: item.SENDER_EMAIL || item.sender_email || "",
-          company: item.SENDER_COMPANY || item.sender_company || "",
-          city: item.SENDER_CITY || item.sender_city || "",
-          requirement: item.SUBJECT || item.QUERY_PRODUCT_NAME || "IndiaMART Solar Enquiry",
-          description: item.QUERY_MESSAGE || item.query_message || "",
-          estimatedValue: Number(item.estimated_value || 0),
+          customerName:
+            item.SENDER_NAME || item.sender_name || item.name || "IndiaMART Enquiry",
+          phone: cleanPhone(
+            item.SENDER_MOBILE || item.sender_mobile || item.phone || item.mobile
+          ),
+          email: item.SENDER_EMAIL || item.sender_email || item.email || "",
+          company: item.SENDER_COMPANY || item.sender_company || item.company || "",
+          city: item.SENDER_CITY || item.sender_city || item.city || "",
+          requirement:
+            item.SUBJECT ||
+            item.QUERY_PRODUCT_NAME ||
+            item.product ||
+            "IndiaMART Solar Enquiry",
+          description:
+            item.QUERY_MESSAGE || item.query_message || item.message || "",
+          estimatedValue: Number(item.estimated_value || item.estimatedValue || 0),
         },
       };
     },
