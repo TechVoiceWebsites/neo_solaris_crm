@@ -18,12 +18,19 @@ import integrations from "./routes/integrations.js";
 export const app = express();
 app.set("trust proxy", 1);
 app.use(helmet());
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://neo-solaris-crm.netlify.app",
+  ...(env.frontendUrl ? env.frontendUrl.split(",") : []),
+]
+  .map((url) => url.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      env.frontendUrl
-    ].filter(Boolean),
+    origin: allowedOrigins,
     credentials: true,
     allowedHeaders: [
       "Content-Type",
@@ -34,6 +41,7 @@ app.use(
     ],
   })
 );
+
 app.use(rateLimit({ windowMs: 60000, limit: 300 }));
 app.use(
   express.json({
