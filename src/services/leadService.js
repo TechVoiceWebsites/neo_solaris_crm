@@ -39,6 +39,7 @@ export async function createLead({ data, sourceCode, externalId, createdById }) 
   });
   return { lead, duplicate: false };
 }
+
 async function systemUserId(tx) { return (await tx.user.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } }))?.id; }
 
 export async function pickRoundRobin(tx, candidateIds) {
@@ -58,9 +59,15 @@ export async function assignLead(tx, { leadId, assigneeId, byId, note }) {
 
 export async function autoAllocateIfEnabled(lead) {
   if (env.allocationMode !== "round_robin") return lead;
-  const admin = await prisma.user.findFirst({ where: { role: "ADMIN", isActive: true } });
+  const admin = await prisma.user.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } });
+  if (!admin) return lead;
   return prisma.$transaction(async (tx) => {
-    const staff = await tx.user.findMany({ where: { role: "SALES_STAFF", isActive: true, deletedAt: null }, select: { id: true } });
+    const staff = await tx.user.findMany({
+      where: { role: "SALES_STAFF", isActive: true, deletedAt: null },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (!staff.length) return lead;
     const pick = await pickRoundRobin(tx, staff.map((s) => s.id));
     return assignLead(tx, { leadId: lead.id, assigneeId: pick, byId: admin.id, note: "Auto round-robin" });
   });
