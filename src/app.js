@@ -65,6 +65,7 @@ api.use("/integrations", integrations); // Public webhooks (signed) + admin rout
 api.use(authenticate);
 api.use("/users", users);
 api.use("/leads", leads);
+api.use("/allocation", allocation);
 api.use("/allocations", allocation);
 api.use("/followups", followups);
 api.get(
