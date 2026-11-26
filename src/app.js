@@ -37,7 +37,7 @@ app.use(
       "Authorization",
       "x-signature",
       "x-api-key",
-      "x-webhook-secret", // Added for IndiaMART Email-to-Webhook integration
+      "x-webhook-secret",
     ],
   })
 );
@@ -45,23 +45,24 @@ app.use(
 app.use(rateLimit({ windowMs: 60000, limit: 300 }));
 app.use(
   express.json({
-    limit: "2mb", // Increased from 200kb to support bulk CSV imports
+    limit: "2mb",
     verify: (req, _res, buf) => {
-      req.rawBody = buf; // rawBody for webhook HMAC signatures
+      req.rawBody = buf;
     },
   })
 );
 
+const healthHandler = wrap(async (_req, res) => {
+  await prisma.$queryRaw`SELECT 1`;
+  ok(res, { status: "ok" });
+});
+
+app.get("/health", healthHandler);
+
 const api = express.Router();
-api.get(
-  "/health",
-  wrap(async (_req, res) => {
-    await prisma.$queryRaw`SELECT 1`;
-    ok(res, { status: "ok" });
-  })
-);
+api.get("/health", healthHandler);
 api.use("/auth", auth);
-api.use("/integrations", integrations); // Public webhooks (signed) + admin routes (authenticated inside)
+api.use("/integrations", integrations);
 api.use(authenticate);
 api.use("/users", users);
 api.use("/leads", leads);
