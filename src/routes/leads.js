@@ -239,6 +239,30 @@ r.put("/:id", wrap(async (req, res) => {
   ok(res, up);
 }));
 
+// ---- Delete Lead (Admin & Manager only)
+r.delete("/:id", requireRole("ADMIN", "MANAGER"), wrap(async (req, res) => {
+  const lead = await getLeadOr404(req.user, req.params.id);
+  const [deleted] = await prisma.$transaction([
+    prisma.lead.update({
+      where: { id: lead.id },
+      data: { deletedAt: new Date() },
+    }),
+    prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: "lead.delete",
+        entity: "lead",
+        entityId: lead.id,
+        meta: { customerName: lead.customerName, phone: lead.phone },
+      },
+    }),
+  ]);
+
+  invalidateLeadCaches();
+  await emitLead("lead:deleted", deleted);
+  ok(res, { id: lead.id, deleted: true });
+}));
+
 // ---- Pipeline
 r.put("/:id/stage", wrap(async (req, res) => {
   const lead = await getLeadOr404(req.user, req.params.id);
