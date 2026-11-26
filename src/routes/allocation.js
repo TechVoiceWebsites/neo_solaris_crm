@@ -11,6 +11,7 @@ const r = Router();
 r.use(requireRole("ADMIN", "MANAGER"));
 const body = z.object({ leadIds: z.array(z.string().uuid()).min(1).max(100), assigneeId: z.string().uuid().optional(), method: z.enum(["MANUAL", "ROUND_ROBIN"]).default("MANUAL"), note: z.string().max(300).optional() })
   .refine((v) => v.method === "ROUND_ROBIN" || v.assigneeId, "Choose who to assign to");
+
 r.post("/", wrap(async (req, res) => {
   const d = parse(body, req.body);
   const allowedAssignees = req.user.role === "ADMIN" ? null : await teamUserIds(req.user);
@@ -21,18 +22,18 @@ r.post("/", wrap(async (req, res) => {
   const scope = req.user.role === "ADMIN" ? { deletedAt: null } : { deletedAt: null, OR: [{ currentOwnerId: null }, await leadScope(req.user)] };
   const leads = await prisma.lead.findMany({ where: { id: { in: d.leadIds }, ...scope } });
   if (leads.length !== d.leadIds.length) throw new ApiError(404, "One or more leads were not found");
-  const done = await prisma.$transaction(async (tx) => {
-    const out = [];
-    for (const l of leads) {
-      const to = d.method === "ROUND_ROBIN" ? await pickRoundRobin(tx, pool) : d.assigneeId;
-      if (l.currentOwnerId === to) continue; // no duplicate assignment event
-      out.push(await assignLead(tx, { leadId: l.id, assigneeId: to, byId: req.user.id, note: d.note }));
-    }
-    return out;
-  });
+
+  const done = [];
+  for (const l of leads) {
+    const to = d.method === "ROUND_ROBIN" ? await pickRoundRobin(prisma, pool) : d.assigneeId;
+    if (l.currentOwnerId === to) continue; // no duplicate assignment event
+    done.push(await assignLead(prisma, { leadId: l.id, assigneeId: to, byId: req.user.id, note: d.note }));
+  }
+
   for (const l of done) { await emitLead("lead:assigned", l); emitTo(`user:${l.currentOwnerId}`, "notification", { type: "lead:assigned", leadId: l.id }); }
   ok(res, { assigned: done.length, skipped: leads.length - done.length });
 }));
+
 r.get("/", wrap(async (req, res) => {
   const lead = await leadScope(req.user);
   const { skip, take, p, size } = page(req.query);
@@ -40,4 +41,5 @@ r.get("/", wrap(async (req, res) => {
   const [rows, total] = await Promise.all([prisma.leadAssignment.findMany({ where, skip, take, orderBy: { assignedAt: "desc" }, include: { lead: { select: { id: true, customerName: true, company: true } }, assignedTo: { select: { id: true, name: true } }, assignedBy: { select: { id: true, name: true } } } }), prisma.leadAssignment.count({ where })]);
   ok(res, rows, { page: p, pageSize: size, total });
 }));
+
 export default r;

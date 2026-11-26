@@ -28,32 +28,42 @@ export async function createLead({ data, sourceCode, externalId, createdById }) 
     where: { deletedAt: null, status: "OPEN", OR: [{ phone }, ...(externalId ? [{ sourceId: source.id, externalId }] : [])] },
   });
   if (dup) return { lead: dup, duplicate: true };
-  const lead = await prisma.$transaction(async (tx) => {
-    const l = await tx.lead.create({ data: {
+
+  const actorId = createdById ?? (await systemUserId(prisma));
+  const lead = await prisma.lead.create({
+    data: {
       sourceId: source.id, externalId, customerName: data.customerName, phone, email: data.email || null, company: data.company,
       city: data.city, requirement: data.requirement, description: data.description, priority: data.priority ?? "MEDIUM",
-      estimatedValue: data.estimatedValue, stageId: first.id, createdById } });
-    await tx.leadStageHistory.create({ data: { leadId: l.id, toStageId: first.id, changedById: createdById ?? (await systemUserId(tx)), reason: "Lead created" } });
-    await audit(tx, createdById, "lead.create", "lead", l.id, { source: sourceCode });
-    return l;
+      estimatedValue: data.estimatedValue, stageId: first.id, createdById,
+    },
   });
+
+  await prisma.$transaction([
+    prisma.leadStageHistory.create({ data: { leadId: lead.id, toStageId: first.id, changedById: actorId, reason: "Lead created" } }),
+    prisma.auditLog.create({ data: { userId: createdById, action: "lead.create", entity: "lead", entityId: lead.id, meta: { source: sourceCode } } }),
+  ]);
+
   return { lead, duplicate: false };
 }
 
-async function systemUserId(tx) { return (await tx.user.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } }))?.id; }
+async function systemUserId(db = prisma) {
+  return (await db.user.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } }))?.id;
+}
 
-export async function pickRoundRobin(tx, candidateIds) {
+export async function pickRoundRobin(db, candidateIds) {
   if (!candidateIds.length) throw new ApiError(409, "No active sales staff available");
-  const last = await tx.leadAssignment.groupBy({ by: ["assignedToId"], where: { assignedToId: { in: candidateIds } }, _max: { assignedAt: true } });
+  const last = await db.leadAssignment.groupBy({ by: ["assignedToId"], where: { assignedToId: { in: candidateIds } }, _max: { assignedAt: true } });
   const m = new Map(last.map((r) => [r.assignedToId, r._max.assignedAt?.getTime() ?? 0]));
   return [...candidateIds].sort((a, b) => (m.get(a) ?? 0) - (m.get(b) ?? 0))[0];
 }
 
 // Append-only history: reassignment adds a row; old rows are never changed.
-export async function assignLead(tx, { leadId, assigneeId, byId, note }) {
-  const lead = await tx.lead.update({ where: { id: leadId }, data: { currentOwnerId: assigneeId } });
-  await tx.leadAssignment.create({ data: { leadId, assignedToId: assigneeId, assignedById: byId, note } });
-  await audit(tx, byId, "lead.assign", "lead", leadId, { assigneeId });
+export async function assignLead(db, { leadId, assigneeId, byId, note }) {
+  const [lead] = await prisma.$transaction([
+    prisma.lead.update({ where: { id: leadId }, data: { currentOwnerId: assigneeId } }),
+    prisma.leadAssignment.create({ data: { leadId, assignedToId: assigneeId, assignedById: byId, note } }),
+    prisma.auditLog.create({ data: { userId: byId, action: "lead.assign", entity: "lead", entityId: leadId, meta: { assigneeId } } }),
+  ]);
   return lead;
 }
 
@@ -61,14 +71,12 @@ export async function autoAllocateIfEnabled(lead) {
   if (env.allocationMode !== "round_robin") return lead;
   const admin = await prisma.user.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } });
   if (!admin) return lead;
-  return prisma.$transaction(async (tx) => {
-    const staff = await tx.user.findMany({
-      where: { role: "SALES_STAFF", isActive: true, deletedAt: null },
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
-    });
-    if (!staff.length) return lead;
-    const pick = await pickRoundRobin(tx, staff.map((s) => s.id));
-    return assignLead(tx, { leadId: lead.id, assigneeId: pick, byId: admin.id, note: "Auto round-robin" });
+  const staff = await prisma.user.findMany({
+    where: { role: "SALES_STAFF", isActive: true, deletedAt: null },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
   });
+  if (!staff.length) return lead;
+  const pick = await pickRoundRobin(prisma, staff.map((s) => s.id));
+  return assignLead(prisma, { leadId: lead.id, assigneeId: pick, byId: admin.id, note: "Auto round-robin" });
 }
