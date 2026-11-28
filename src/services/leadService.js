@@ -19,29 +19,99 @@ export async function audit(tx, userId, action, entity, entityId, meta) {
 }
 
 // Creates a lead after duplicate checks. Returns { lead, duplicate }.
-export async function createLead({ data, sourceCode, externalId, createdById }) {
+// Optional assignment is written in the same transaction as lead creation.
+export async function createLead({
+  data,
+  sourceCode,
+  externalId,
+  createdById,
+  assignment,
+}) {
   const phone = normPhone(data.phone);
   const source = await prisma.leadSource.findUnique({ where: { code: sourceCode } });
   if (!source) throw new ApiError(400, "Unknown lead source");
-  const first = await prisma.pipelineStage.findFirst({ orderBy: { position: "asc" } });
+
+  const first = await prisma.pipelineStage.findFirst({
+    orderBy: { position: "asc" },
+  });
+  if (!first) throw new ApiError(500, "No pipeline stage is configured");
+
   const dup = await prisma.lead.findFirst({
-    where: { deletedAt: null, status: "OPEN", OR: [{ phone }, ...(externalId ? [{ sourceId: source.id, externalId }] : [])] },
+    where: {
+      deletedAt: null,
+      status: "OPEN",
+      OR: [
+        { phone },
+        ...(externalId ? [{ sourceId: source.id, externalId }] : []),
+      ],
+    },
   });
   if (dup) return { lead: dup, duplicate: true };
 
   const actorId = createdById ?? (await systemUserId(prisma));
-  const lead = await prisma.lead.create({
-    data: {
-      sourceId: source.id, externalId, customerName: data.customerName, phone, email: data.email || null, company: data.company,
-      city: data.city, requirement: data.requirement, description: data.description, priority: data.priority ?? "MEDIUM",
-      estimatedValue: data.estimatedValue, stageId: first.id, createdById,
-    },
-  });
 
-  await prisma.$transaction([
-    prisma.leadStageHistory.create({ data: { leadId: lead.id, toStageId: first.id, changedById: actorId, reason: "Lead created" } }),
-    prisma.auditLog.create({ data: { userId: createdById, action: "lead.create", entity: "lead", entityId: lead.id, meta: { source: sourceCode } } }),
-  ]);
+  const lead = await prisma.$transaction(async (tx) => {
+    const created = await tx.lead.create({
+      data: {
+        sourceId: source.id,
+        externalId,
+        customerName: data.customerName,
+        phone,
+        email: data.email || null,
+        company: data.company,
+        city: data.city,
+        requirement: data.requirement,
+        description: data.description,
+        priority: data.priority ?? "MEDIUM",
+        estimatedValue: data.estimatedValue,
+        stageId: first.id,
+        createdById,
+        ...(assignment && { currentOwnerId: assignment.assigneeId }),
+      },
+    });
+
+    await tx.leadStageHistory.create({
+      data: {
+        leadId: created.id,
+        toStageId: first.id,
+        changedById: actorId,
+        reason: "Lead created",
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId: createdById,
+        action: "lead.create",
+        entity: "lead",
+        entityId: created.id,
+        meta: { source: sourceCode },
+      },
+    });
+
+    if (assignment) {
+      await tx.leadAssignment.create({
+        data: {
+          leadId: created.id,
+          assignedToId: assignment.assigneeId,
+          assignedById: assignment.assignedById,
+          note: assignment.note || null,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId: assignment.assignedById,
+          action: "lead.assign",
+          entity: "lead",
+          entityId: created.id,
+          meta: { assigneeId: assignment.assigneeId, note: assignment.note || null },
+        },
+      });
+    }
+
+    return created;
+  });
 
   return { lead, duplicate: false };
 }
@@ -58,13 +128,34 @@ export async function pickRoundRobin(db, candidateIds) {
 }
 
 // Append-only history: reassignment adds a row; old rows are never changed.
+// Accepts either the Prisma client or an existing transaction client.
 export async function assignLead(db, { leadId, assigneeId, byId, note }) {
-  const [lead] = await prisma.$transaction([
-    prisma.lead.update({ where: { id: leadId }, data: { currentOwnerId: assigneeId } }),
-    prisma.leadAssignment.create({ data: { leadId, assignedToId: assigneeId, assignedById: byId, note } }),
-    prisma.auditLog.create({ data: { userId: byId, action: "lead.assign", entity: "lead", entityId: leadId, meta: { assigneeId } } }),
-  ]);
-  return lead;
+  const write = async (tx) => {
+    const lead = await tx.lead.update({
+      where: { id: leadId },
+      data: { currentOwnerId: assigneeId },
+    });
+
+    await tx.leadAssignment.create({
+      data: { leadId, assignedToId: assigneeId, assignedById: byId, note },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId: byId,
+        action: "lead.assign",
+        entity: "lead",
+        entityId: leadId,
+        meta: { assigneeId, note: note || null },
+      },
+    });
+
+    return lead;
+  };
+
+  return typeof db.$transaction === "function"
+    ? db.$transaction(write)
+    : write(db);
 }
 
 export async function autoAllocateIfEnabled(lead) {

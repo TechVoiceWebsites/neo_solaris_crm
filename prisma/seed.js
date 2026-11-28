@@ -13,6 +13,7 @@ const sources = [
   ["DIRECT", "Direct Enquiries"],
 ];
 
+
 const stages = [
   "New Lead",
   "Discussion",
@@ -20,37 +21,45 @@ const stages = [
   "Negotiation",
   "Order Confirmation",
   "Installation",
+  "Completed",
   "Lost",
 ];
 
-for (const [code, name] of sources) {
-  await prisma.leadSource.upsert({
-    where: { code },
-    update: { name },
-    create: { code, name },
+// Update stages safely without deleting existing stage records.
+// Temporary positions avoid conflicts because position is unique.
+await prisma.$transaction(async (tx) => {
+  const existingStages = await tx.pipelineStage.findMany({
+    orderBy: { position: "asc" },
+    select: { id: true },
   });
-}
 
-await prisma.pipelineStage.deleteMany({
-  where: { name: { notIn: stages } },
+  // Move existing stages to temporary unique positions.
+  for (const [index, stage] of existingStages.entries()) {
+    await tx.pipelineStage.update({
+      where: { id: stage.id },
+      data: { position: 10000 + index },
+    });
+  }
+
+  // Create or update the required stages.
+  for (const [index, name] of stages.entries()) {
+    await tx.pipelineStage.upsert({
+      where: { name },
+      update: {
+        position: index + 1,
+        isWon: name === "Completed",
+        isLost: name === "Lost",
+      },
+      create: {
+        name,
+        position: index + 1,
+        isWon: name === "Completed",
+        isLost: name === "Lost",
+      },
+    });
+  }
 });
 
-for (const [i, name] of stages.entries()) {
-  await prisma.pipelineStage.upsert({
-    where: { name },
-    update: {
-      position: i + 1,
-      isWon: name === "Order Confirmation" || name === "Installation",
-      isLost: name === "Lost",
-    },
-    create: {
-      name,
-      position: i + 1,
-      isWon: name === "Order Confirmation" || name === "Installation",
-      isLost: name === "Lost",
-    },
-  });
-}
 
 // 1. Admin Account
 const adminPw = process.env.SEED_ADMIN_PASSWORD || "Admin@123";

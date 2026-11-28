@@ -15,7 +15,7 @@ const body = z.object({ leadIds: z.array(z.string().uuid()).min(1).max(100), ass
 r.post("/", wrap(async (req, res) => {
   const d = parse(body, req.body);
   const allowedAssignees = req.user.role === "ADMIN" ? null : await teamUserIds(req.user);
-  const staff = await prisma.user.findMany({ where: { isActive: true, deletedAt: null, role: { in: ["SALES_STAFF", "MANAGER"] }, ...(allowedAssignees && { id: { in: allowedAssignees } }) }, select: { id: true, role: true } });
+  const staff = await prisma.user.findMany({ where: { isActive: true, deletedAt: null, role: { in: ["SALES_STAFF", "MANAGER"] }, ...(allowedAssignees && { id: { in: allowedAssignees } }) }, select: { id: true, role: true, name: true } });
   const pool = staff.filter((s) => s.role === "SALES_STAFF").map((s) => s.id);
   if (d.assigneeId && !staff.some((s) => s.id === d.assigneeId)) throw new ApiError(403, "You cannot assign to this person");
   // Leads a manager may touch: in team scope, or still unassigned.
@@ -24,13 +24,44 @@ r.post("/", wrap(async (req, res) => {
   if (leads.length !== d.leadIds.length) throw new ApiError(404, "One or more leads were not found");
 
   const done = [];
-  for (const l of leads) {
+  for (const lead of leads) {
     const to = d.method === "ROUND_ROBIN" ? await pickRoundRobin(prisma, pool) : d.assigneeId;
-    if (l.currentOwnerId === to) continue; // no duplicate assignment event
-    done.push(await assignLead(prisma, { leadId: l.id, assigneeId: to, byId: req.user.id, note: d.note }));
+    if (lead.currentOwnerId === to) continue; // no duplicate assignment event
+
+    const previousOwner = lead.currentOwnerId
+      ? staff.find((person) => person.id === lead.currentOwnerId)
+        || await prisma.user.findUnique({ where: { id: lead.currentOwnerId }, select: { id: true, name: true } })
+      : null;
+    const nextOwner = staff.find((person) => person.id === to);
+    const note = previousOwner
+      ? `Reassigned from ${previousOwner.name} to ${nextOwner?.name || "Sales Person"}${d.note ? ` — ${d.note}` : ""}`
+      : (d.note || "Assigned from Unassigned leads");
+
+    const updated = await assignLead(prisma, {
+      leadId: lead.id,
+      assigneeId: to,
+      byId: req.user.id,
+      note,
+    });
+    done.push({ lead: updated, previousOwnerId: lead.currentOwnerId });
   }
 
-  for (const l of done) { await emitLead("lead:assigned", l); emitTo(`user:${l.currentOwnerId}`, "notification", { type: "lead:assigned", leadId: l.id }); }
+  for (const item of done) {
+    const lead = item.lead;
+    await emitLead("lead:assigned", lead);
+    if (item.previousOwnerId && item.previousOwnerId !== lead.currentOwnerId) {
+      emitTo(`user:${item.previousOwnerId}`, "notification", {
+        type: "lead:reassigned_away",
+        leadId: lead.id,
+        newOwnerId: lead.currentOwnerId,
+      });
+    }
+    emitTo(`user:${lead.currentOwnerId}`, "notification", {
+      type: item.previousOwnerId ? "lead:reassigned" : "lead:assigned",
+      leadId: lead.id,
+      previousOwnerId: item.previousOwnerId,
+    });
+  }
   ok(res, { assigned: done.length, skipped: leads.length - done.length });
 }));
 

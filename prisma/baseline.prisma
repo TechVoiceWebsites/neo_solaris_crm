@@ -1,0 +1,321 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                  String             @id @default(uuid()) @db.Uuid
+  email               String             @unique
+  passwordHash        String             @map("password_hash")
+  name                String
+  role                Role
+  isActive            Boolean            @default(true) @map("is_active")
+  refreshTokenHash    String?            @map("refresh_token_hash")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+  deletedAt           DateTime?          @map("deleted_at")
+  username            String?            @unique
+  auditLogs           AuditLog[]
+  calls               CallActivity[]
+  followups           Followup[]
+  assignmentsMade     LeadAssignment[]   @relation("AssignedBy")
+  assignmentsReceived LeadAssignment[]   @relation("AssignedTo")
+  stageChanges        LeadStageHistory[]
+  profile             StaffProfile?
+
+  @@index([role])
+  @@map("users")
+}
+
+model StaffProfile {
+  id        String         @id @default(uuid()) @db.Uuid
+  userId    String         @unique @map("user_id") @db.Uuid
+  managerId String?        @map("manager_id") @db.Uuid
+  phone     String?
+  teamName  String?        @map("team_name")
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+  manager   StaffProfile?  @relation("Team", fields: [managerId], references: [id])
+  reports   StaffProfile[] @relation("Team")
+  user      User           @relation(fields: [userId], references: [id])
+
+  @@index([managerId])
+  @@map("staff_profiles")
+}
+
+model LeadSource {
+  id        String           @id @default(uuid()) @db.Uuid
+  name      String           @unique
+  code      String           @unique
+  state     IntegrationState @default(AWAITING_CONFIGURATION)
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  logs      IntegrationLog[]
+  leads     Lead[]
+
+  @@map("lead_sources")
+}
+
+model PipelineStage {
+  id          String             @id @default(uuid()) @db.Uuid
+  name        String             @unique
+  position    Int                @unique
+  isWon       Boolean            @default(false) @map("is_won")
+  isLost      Boolean            @default(false) @map("is_lost")
+  fromHistory LeadStageHistory[] @relation("FromStage")
+  toHistory   LeadStageHistory[] @relation("ToStage")
+  leads       Lead[]
+
+  @@map("pipeline_stages")
+}
+
+model Lead {
+  id             String              @id @default(uuid()) @db.Uuid
+  sourceId       String              @map("source_id") @db.Uuid
+  externalId     String?             @map("external_id")
+  customerName   String              @map("customer_name")
+  company        String?
+  phone          String
+  email          String?
+  city           String?
+  requirement    String?
+  description    String?
+  priority       Priority            @default(MEDIUM)
+  estimatedValue Decimal?            @map("estimated_value") @db.Decimal(14, 2)
+  lostReason     String?             @map("lost_reason")
+  nextFollowupAt DateTime?           @map("next_followup_at")
+  createdById    String?             @map("created_by_id") @db.Uuid
+  stageId        String              @map("stage_id") @db.Uuid
+  status         LeadStatus          @default(OPEN)
+  currentOwnerId String?             @map("current_owner_id") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+  deletedAt      DateTime?           @map("deleted_at")
+  stageDetails   Json?               @map("stage_details")
+  calls          CallActivity[]
+  followups      Followup[]
+  assignments    LeadAssignment[]
+  stageHistory   LeadStageHistory[]
+  source         LeadSource          @relation(fields: [sourceId], references: [id])
+  stage          PipelineStage       @relation(fields: [stageId], references: [id])
+  orders         OrderInstallation[]
+  quotations     Quotation[]
+
+  @@unique([sourceId, externalId])
+  @@index([phone])
+  @@index([stageId, status])
+  @@index([currentOwnerId])
+  @@index([createdAt])
+  @@map("leads")
+}
+
+model LeadAssignment {
+  id           String   @id @default(uuid()) @db.Uuid
+  leadId       String   @map("lead_id") @db.Uuid
+  assignedToId String   @map("assigned_to_id") @db.Uuid
+  assignedById String   @map("assigned_by_id") @db.Uuid
+  note         String?
+  assignedAt   DateTime @default(now()) @map("assigned_at")
+  assignedBy   User     @relation("AssignedBy", fields: [assignedById], references: [id])
+  assignedTo   User     @relation("AssignedTo", fields: [assignedToId], references: [id])
+  lead         Lead     @relation(fields: [leadId], references: [id])
+
+  @@index([leadId, assignedAt])
+  @@index([assignedToId])
+  @@map("lead_assignments")
+}
+
+model IntegrationLog {
+  id          String     @id @default(uuid()) @db.Uuid
+  sourceId    String     @map("source_id") @db.Uuid
+  status      LogStatus
+  externalId  String?    @map("external_id")
+  payload     Json
+  error       String?
+  attempts    Int        @default(0)
+  nextRetryAt DateTime?  @map("next_retry_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  source      LeadSource @relation(fields: [sourceId], references: [id])
+
+  @@index([sourceId, status])
+  @@map("integration_logs")
+}
+
+model Followup {
+  id             String         @id @default(uuid()) @db.Uuid
+  leadId         String         @map("lead_id") @db.Uuid
+  staffId        String         @map("staff_id") @db.Uuid
+  dueAt          DateTime       @map("due_at")
+  type           ActivityType   @default(CALL)
+  status         FollowupStatus @default(PENDING)
+  note           String?
+  reminderSentAt DateTime?      @map("reminder_sent_at")
+  completedAt    DateTime?      @map("completed_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  lead           Lead           @relation(fields: [leadId], references: [id])
+  staff          User           @relation(fields: [staffId], references: [id])
+
+  @@index([staffId, status, dueAt])
+  @@index([leadId])
+  @@map("followups")
+}
+
+model CallActivity {
+  id        String       @id @default(uuid()) @db.Uuid
+  leadId    String       @map("lead_id") @db.Uuid
+  staffId   String       @map("staff_id") @db.Uuid
+  calledAt  DateTime     @map("called_at")
+  type      ActivityType @default(CALL)
+  outcome   CallOutcome?
+  notes     String?
+  createdAt DateTime     @default(now()) @map("created_at")
+  lead      Lead         @relation(fields: [leadId], references: [id])
+  staff     User         @relation(fields: [staffId], references: [id])
+
+  @@index([leadId, calledAt])
+  @@map("call_activities")
+}
+
+model LeadStageHistory {
+  id          String         @id @default(uuid()) @db.Uuid
+  leadId      String         @map("lead_id") @db.Uuid
+  fromStageId String?        @map("from_stage_id") @db.Uuid
+  toStageId   String         @map("to_stage_id") @db.Uuid
+  changedById String         @map("changed_by_id") @db.Uuid
+  reason      String?
+  changedAt   DateTime       @default(now()) @map("changed_at")
+  changedBy   User           @relation(fields: [changedById], references: [id])
+  fromStage   PipelineStage? @relation("FromStage", fields: [fromStageId], references: [id])
+  lead        Lead           @relation(fields: [leadId], references: [id])
+  toStage     PipelineStage  @relation("ToStage", fields: [toStageId], references: [id])
+
+  @@index([leadId, changedAt])
+  @@map("lead_stage_history")
+}
+
+model Quotation {
+  id        String    @id @default(uuid()) @db.Uuid
+  leadId    String    @map("lead_id") @db.Uuid
+  number    String    @unique
+  amount    Decimal   @db.Decimal(14, 2)
+  filePath  String?   @map("file_path")
+  fileName  String?   @map("file_name")
+  sentAt    DateTime? @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  lead      Lead      @relation(fields: [leadId], references: [id])
+
+  @@index([leadId])
+  @@map("quotations")
+}
+
+model OrderInstallation {
+  id            String         @id @default(uuid()) @db.Uuid
+  leadId        String         @map("lead_id") @db.Uuid
+  orderValue    Decimal        @map("order_value") @db.Decimal(14, 2)
+  confirmedAt   DateTime?      @map("confirmed_at")
+  installStatus InstallStatus? @map("install_status")
+  scheduledFor  DateTime?      @map("scheduled_for")
+  completedAt   DateTime?      @map("completed_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  lead          Lead           @relation(fields: [leadId], references: [id])
+
+  @@index([leadId])
+  @@map("orders_installations")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  meta      Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model quotation_sequences {
+  year        Int    @id
+  last_number BigInt @default(0)
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  SALES_STAFF
+}
+
+enum LeadStatus {
+  OPEN
+  WON
+  LOST
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ActivityType {
+  CALL
+  WHATSAPP
+  EMAIL
+  MEETING
+}
+
+enum IntegrationState {
+  AWAITING_CONFIGURATION
+  ACTIVE
+  FAILED
+  DISABLED
+}
+
+enum LogStatus {
+  RECEIVED
+  REJECTED
+  DUPLICATE
+  FAILED
+  RETRYING
+  PROCESSED
+}
+
+enum FollowupStatus {
+  PENDING
+  COMPLETED
+  OVERDUE
+  CANCELLED
+}
+
+enum CallOutcome {
+  CONNECTED
+  NOT_REACHABLE
+  CALL_BACK_LATER
+  INTERESTED
+  NOT_INTERESTED
+  WRONG_NUMBER
+}
+
+enum InstallStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  ON_HOLD
+}
+

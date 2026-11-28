@@ -14,6 +14,7 @@ const list = (extra) => wrap(async (req, res) => {
   ok(res, rows, { page: p, pageSize: size, total });
 });
 r.get("/today", list((n) => { const s = new Date(n); s.setHours(0, 0, 0, 0); return { status: "PENDING", dueAt: { gte: s, lt: new Date(s.getTime() + 86400000) } }; }));
+r.get("/upcoming", list((n) => { const s = new Date(n); s.setHours(0, 0, 0, 0); const next = new Date(s.getTime() + 86400000); return { status: "PENDING", dueAt: { gte: next } }; }));
 r.get("/pending", list(() => ({ status: "PENDING" })));
 r.get("/overdue", list((n) => ({ status: { in: ["PENDING", "OVERDUE"] }, dueAt: { lt: n } }))); // computed live, so it is correct even between job runs
 r.get("/completed", list(() => ({ status: "COMPLETED" })));

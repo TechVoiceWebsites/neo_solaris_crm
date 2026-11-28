@@ -40,7 +40,13 @@ function range(q) {
       const i = new Date(now.getTime() + 330 * 60000);
       return { gte: new Date(Date.UTC(i.getUTCFullYear(), i.getUTCMonth(), 1) - 330 * 60000) };
     }
-    case "custom": return { ...(q.from && { gte: new Date(q.from) }), ...(q.to && { lt: new Date(new Date(q.to).getTime() + DAY) }) };
+    case "custom": {
+      const istStart = (value) => new Date(`${value}T00:00:00+05:30`);
+      return {
+        ...(q.from && { gte: istStart(q.from) }),
+        ...(q.to && { lt: new Date(istStart(q.to).getTime() + DAY) }),
+      };
+    }
     default: return undefined;
   }
 }
@@ -86,13 +92,24 @@ async function buildOverview(req) {
   const leadIdScope = { lead: { is: scope } };
 
   // Split 10 counts into 2 calm batches of 5 so Supabase pooler never saturates
-  const [total, today, unassigned, won, lost] = await Promise.all([
+  const [total, today, unassigned, won, lost, valid, invalid, followupLeadRows] = await Promise.all([
     prisma.lead.count({ where }),
     prisma.lead.count({ where: { ...where, createdAt: { gte: t } } }),
     prisma.lead.count({ where: { ...where, currentOwnerId: null } }),
     prisma.lead.count({ where: { ...where, status: "WON" } }),
     prisma.lead.count({ where: { ...where, status: "LOST" } }),
+    prisma.lead.count({ where: { ...where, validityStatus: "VALID" } }),
+    prisma.lead.count({ where: { ...where, validityStatus: "INVALID" } }),
+    prisma.followup.findMany({
+      where: {
+        status: { in: ["PENDING", "OVERDUE"] },
+        lead: { is: where },
+      },
+      distinct: ["leadId"],
+      select: { leadId: true },
+    }),
   ]);
+  const followup = followupLeadRows.length;
 
   const [dueToday, overdue, pending, quotations, orders] = await Promise.all([
     prisma.followup.count({ where: { ...fu, status: "PENDING", dueAt: { gte: t, lt: new Date(t.getTime() + DAY) } } }),
@@ -115,6 +132,10 @@ async function buildOverview(req) {
     overdueFollowups: overdue,
     won,
     lost,
+    valid,
+    invalid,
+    followup,
+    converted: won,
     active: total - won - lost,
     conversionRate: total ? Math.round((won / total) * 1000) / 10 : 0,
   };
@@ -239,7 +260,7 @@ async function buildStaffPerformance(req) {
 // Combined endpoint: returns ALL dashboard sections in ONE HTTP call (eliminates 6x waterfall)
 // ---------------------------------------------------------------------------------------------
 r.get("/", wrap(async (req, res) => {
-  const cacheKey = `${req.user.id}|${req.user.role}|${req.query.range ?? ""}|${req.query.staffId ?? ""}|${req.query.managerId ?? ""}|${req.query.sourceId ?? ""}`;
+  const cacheKey = `${req.user.id}|${req.user.role}|${req.query.range ?? ""}|${req.query.from ?? ""}|${req.query.to ?? ""}|${req.query.staffId ?? ""}|${req.query.managerId ?? ""}|${req.query.sourceId ?? ""}`;
   if (req.query.fresh !== "1") {
     const hit = dashCache.get(cacheKey);
     if (hit && Date.now() - hit.at < DASH_TTL) return ok(res, hit.payload);
